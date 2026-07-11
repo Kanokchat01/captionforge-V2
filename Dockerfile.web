@@ -1,0 +1,36 @@
+# Image for the hosted web demo (Render / any container host).
+# NOT the Track 2 submission image — that one is `Dockerfile`, stays headless,
+# and bakes the API key at build time. Here the key is supplied at RUN time as
+# an environment variable, so it never enters an image layer.
+FROM python:3.11-slim
+
+# ffmpeg/ffprobe are required by the frame-extraction pipeline
+# (src/fireworks_vision_client.py).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt ./requirements.txt
+COPY web_demo/requirements.txt ./web_demo/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r web_demo/requirements.txt
+
+# The demo imports the real pipeline from src/ (app.py adds ../src to sys.path).
+COPY src/ ./src/
+COPY web_demo/ ./web_demo/
+
+ENV PYTHONUNBUFFERED=1
+ENV PORT=5000
+EXPOSE 5000
+
+# gunicorn, not the Flask dev server:
+#   --timeout 300   one clip takes 40-90s end to end; the 30s default would
+#                   kill every request mid-pipeline
+#   --threads 8     the pipeline is I/O-bound (HTTP to Fireworks), so threads
+#                   serve concurrent users without extra memory
+#   1 worker        keeps the free-tier memory footprint small
+# Shell form so $PORT (injected by the host) expands.
+CMD gunicorn --chdir web_demo app:app \
+    --bind 0.0.0.0:$PORT \
+    --workers 1 --threads 8 --timeout 300 \
+    --access-logfile - --error-logfile -

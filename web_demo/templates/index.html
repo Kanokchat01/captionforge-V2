@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CaptionForge — Track 2 Demo</title>
+<style>
+  /* ---------- Design tokens ---------------------------------------- */
+  :root {
+    color-scheme: light dark;
+
+    --formal:            oklch(62% 0.17 258);
+    --sarcastic:         oklch(72% 0.15 78);
+    --humorous_tech:     oklch(62% 0.20 300);
+    --humorous_non_tech: oklch(68% 0.13 190);
+
+    --ok:   oklch(65% 0.16 152);
+    --warn: oklch(65% 0.19 30);
+
+    --radius: 14px;
+    --radius-lg: 22px;
+    --ring: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent);
+    --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* Light (default) */
+  :root {
+    --bg:        oklch(98.5% 0.004 260);
+    --bg-sub:    oklch(96% 0.006 260);
+    --surface:   oklch(100% 0 0);
+    --border:    oklch(90% 0.008 260);
+    --border-str:oklch(83% 0.012 260);
+    --text:      oklch(24% 0.02 265);
+    --text-dim:  oklch(52% 0.017 265);
+    --text-mute: oklch(64% 0.014 265);
+    --accent:    oklch(55% 0.19 275);
+    --shadow: 0 1px 2px oklch(24% 0.02 265 / 0.05),
+              0 8px 24px -12px oklch(24% 0.02 265 / 0.14);
+  }
+
+  /* Dark */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        oklch(17% 0.014 268);
+      --bg-sub:    oklch(20% 0.016 268);
+      --surface:   oklch(22% 0.018 268);
+      --border:    oklch(29% 0.02 268);
+      --border-str:oklch(38% 0.024 268);
+      --text:      oklch(96% 0.005 268);
+      --text-dim:  oklch(76% 0.015 268);
+      --text-mute: oklch(62% 0.018 268);
+      --accent:    oklch(70% 0.16 278);
+      --shadow: 0 1px 2px oklch(0% 0 0 / 0.3),
+                0 10px 30px -14px oklch(0% 0 0 / 0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:        oklch(17% 0.014 268);
+    --bg-sub:    oklch(20% 0.016 268);
+    --surface:   oklch(22% 0.018 268);
+    --border:    oklch(29% 0.02 268);
+    --border-str:oklch(38% 0.024 268);
+    --text:      oklch(96% 0.005 268);
+    --text-dim:  oklch(76% 0.015 268);
+    --text-mute: oklch(62% 0.018 268);
+    --accent:    oklch(70% 0.16 278);
+    --shadow: 0 1px 2px oklch(0% 0 0 / 0.3),
+              0 10px 30px -14px oklch(0% 0 0 / 0.6);
+  }
+
+  /* ---------- Base -------------------------------------------------- */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    padding: clamp(20px, 4vw, 48px) clamp(16px, 4vw, 24px) 96px;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; }
+  :focus-visible { outline: none; box-shadow: var(--ring); border-radius: 8px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  /* ---------- Header ------------------------------------------------ */
+  header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 36px; }
+  .head-main { flex: 1; min-width: 0; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--text-dim);
+    background: var(--bg-sub);
+    border: 1px solid var(--border);
+    padding: 5px 11px; border-radius: 999px;
+    margin-bottom: 14px;
+  }
+  .eyebrow::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--ok) 20%, transparent);
+  }
+  h1 {
+    font-size: clamp(28px, 5vw, 40px);
+    line-height: 1.1; letter-spacing: -0.025em; font-weight: 680;
+    margin: 0 0 8px;
+  }
+  .lede { color: var(--text-dim); font-size: clamp(14px, 2vw, 16px); margin: 0; max-width: 62ch; }
+
+  .theme-btn {
+    flex: none;
+    width: 40px; height: 40px;
+    display: grid; place-items: center;
+    background: var(--surface); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 11px;
+    cursor: pointer; transition: color .18s, border-color .18s;
+  }
+  .theme-btn:hover { color: var(--text); border-color: var(--border-str); }
+  .theme-btn svg { width: 18px; height: 18px; }
+  /* The button shows the theme you'd switch TO: moon while light, sun while dark. */
+  .icon-sun { display: none; }
+  .icon-moon { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .icon-sun { display: block; }
+    :root:not([data-theme="light"]) .icon-moon { display: none; }
+  }
+  :root[data-theme="dark"] .icon-sun { display: block; }
+  :root[data-theme="dark"] .icon-moon { display: none; }
+  :root[data-theme="light"] .icon-sun { display: none; }
+  :root[data-theme="light"] .icon-moon { display: block; }
+
+  /* ---------- Pipeline summary strip -------------------------------- */
+  .pipeline-strip {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-bottom: 20px;
+  }
+  .model-tag {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-size: 12px; padding: 5px 10px;
+    background: var(--bg-sub); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text-dim);
+  }
+  .model-tag b { font-weight: 600; color: var(--text); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .model-tag code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12px; color: var(--text);
+  }
+
+  /* ---------- Panel / form ------------------------------------------ */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: clamp(20px, 3.5vw, 28px);
+    box-shadow: var(--shadow);
+  }
+  .field + .field { margin-top: 22px; }
+  label.lbl {
+    display: block; font-size: 13px; font-weight: 600;
+    color: var(--text); margin-bottom: 9px;
+  }
+  .hint { font-weight: 400; color: var(--text-mute); }
+
+  .url-row { display: flex; gap: 10px; }
+  input[type=url] {
+    flex: 1; min-width: 0;
+    padding: 12px 14px;
+    font: inherit; font-size: 15px;
+    color: var(--text);
+    background: var(--bg-sub);
+    border: 1px solid var(--border-str);
+    border-radius: var(--radius);
+    transition: border-color .18s, background .18s;
+  }
+  input[type=url]::placeholder { color: var(--text-mute); }
+  input[type=url]:focus { background: var(--surface); border-color: var(--accent); }
+
+  .examples { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+  .example-chip {
+    font: inherit; font-size: 12.5px;
+    padding: 6px 11px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px dashed var(--border-str);
+    border-radius: 999px; cursor: pointer;
+    transition: color .16s, border-color .16s, background .16s;
+  }
+  .example-chip:hover {
+    color: var(--accent); border-color: var(--accent); border-style: solid;
+    background: color-mix(in oklch, var(--accent) 7%, transparent);
+  }
+
+  .styles-grid {
+    display: grid; gap: 9px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+  .style-chip {
+    --c: var(--accent);
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 13px;
+    background: var(--bg-sub);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer; user-select: none;
+    font-size: 14px; font-weight: 500;
+    transition: border-color .16s, background .16s;
+  }
+  .style-chip:hover { border-color: var(--border-str); }
+  .style-chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .style-chip:has(input:focus-visible) { box-shadow: var(--ring); }
+  .tick {
+    flex: none; width: 18px; height: 18px; border-radius: 6px;
+    border: 1.5px solid var(--border-str);
+    display: grid; place-items: center;
+    transition: background .16s, border-color .16s;
+  }
+  .tick svg { width: 11px; height: 11px; stroke: #fff; stroke-width: 3.2;
+              fill: none; opacity: 0; transform: scale(.5); transition: all .16s var(--ease); }
+  .style-chip:has(input:checked) {
+    border-color: var(--c);
+    background: color-mix(in oklch, var(--c) 9%, var(--surface));
+  }
+  .style-chip:has(input:checked) .tick { background: var(--c); border-color: var(--c); }
+  .style-chip:has(input:checked) .tick svg { opacity: 1; transform: scale(1); }
+
+  button#go {
+    width: 100%; margin-top: 24px;
+    padding: 14px 20px;
+    font: inherit; font-size: 15px; font-weight: 600;
+    color: oklch(99% 0 0);
+    background: var(--accent);
+    border: none; border-radius: var(--radius);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    transition: filter .16s, transform .08s;
+  }
+  button#go:hover:not(:disabled) { filter: brightness(1.08); }
+  button#go:active:not(:disabled) { transform: translateY(1px); }
+  button#go:disabled { opacity: .55; cursor: not-allowed; }
+
+  /* ---------- Pipeline stepper -------------------------------------- */
+  .stepper { display: none; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--border); }
+  .stepper.show { display: block; }
+  .step {
+    display: flex; align-items: center; gap: 12px;
+    padding: 9px 0;
+    color: var(--text-mute); font-size: 14px;
+    transition: color .2s;
+  }
+  .step .bullet {
+    flex: none; width: 22px; height: 22px; border-radius: 50%;
+    border: 2px solid var(--border-str);
+    display: grid; place-items: center;
+    transition: border-color .2s, background .2s;
+  }
+  .step .bullet svg { width: 11px; height: 11px; stroke: #fff; stroke-width: 3.4; fill: none; opacity: 0; }
+  .step[data-status="active"] { color: var(--text); font-weight: 500; }
+  .step[data-status="active"] .bullet {
+    border-color: var(--accent);
+    border-right-color: transparent;
+    animation: spin .7s linear infinite;
+  }
+  .step[data-status="done"] { color: var(--text-dim); }
+  .step[data-status="done"] .bullet { background: var(--ok); border-color: var(--ok); }
+  .step[data-status="done"] .bullet svg { opacity: 1; }
+  .step .detail { margin-left: auto; font-size: 12.5px; color: var(--text-mute);
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- Alerts ------------------------------------------------- */
+  .alert {
+    display: none;
+    margin-top: 20px; padding: 13px 15px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    border: 1px solid color-mix(in oklch, var(--warn) 40%, transparent);
+    background: color-mix(in oklch, var(--warn) 10%, var(--surface));
+    color: color-mix(in oklch, var(--warn) 70%, var(--text));
+  }
+  .alert.show { display: block; }
+
+  /* ---------- Results ------------------------------------------------ */
+  #results { display: none; margin-top: 32px; }
+  #results.show { display: block; animation: rise .35s var(--ease) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+  .results-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .results-head h2 { font-size: 17px; font-weight: 640; letter-spacing: -.01em; margin: 0; }
+  .elapsed {
+    font-size: 12.5px; color: var(--text-mute);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  .card {
+    --c: var(--accent);
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 17px 15px;
+    box-shadow: var(--shadow);
+    animation: rise .3s var(--ease) both;
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0 auto 0 0;
+    width: 3px; border-radius: var(--radius) 0 0 var(--radius);
+    background: var(--c);
+  }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .style-name {
+    font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--c);
+  }
+  .wc {
+    font-size: 11px; font-weight: 600;
+    padding: 2px 7px; border-radius: 999px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid transparent;
+  }
+  .wc[data-ok="true"] {
+    color: var(--ok);
+    background: color-mix(in oklch, var(--ok) 12%, transparent);
+    border-color: color-mix(in oklch, var(--ok) 30%, transparent);
+  }
+  .wc[data-ok="false"] {
+    color: var(--warn);
+    background: color-mix(in oklch, var(--warn) 12%, transparent);
+    border-color: color-mix(in oklch, var(--warn) 30%, transparent);
+  }
+  .copy {
+    margin-left: auto; flex: none;
+    width: 28px; height: 28px; display: grid; place-items: center;
+    background: transparent; color: var(--text-mute);
+    border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; transition: all .15s;
+  }
+  .copy:hover { color: var(--text); border-color: var(--border-str); background: var(--bg-sub); }
+  .copy svg { width: 13px; height: 13px; }
+  .copy.copied { color: var(--ok); border-color: var(--ok); }
+  .caption-text { font-size: 15.5px; line-height: 1.55; color: var(--text); }
+
+  /* ---------- Scene report ------------------------------------------- */
+  details {
+    margin-top: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  summary {
+    padding: 13px 16px; cursor: pointer;
+    font-size: 13.5px; font-weight: 600; color: var(--text-dim);
+    list-style: none; display: flex; align-items: center; gap: 8px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: ""; width: 0; height: 0;
+    border: 4px solid transparent; border-left-color: currentColor;
+    transition: transform .18s var(--ease);
+  }
+  details[open] summary::before { transform: rotate(90deg) translateX(-1px); }
+  summary:hover { color: var(--text); }
+  details pre {
+    margin: 0; padding: 0 16px 16px;
+    white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12.5px; line-height: 1.65; color: var(--text-dim);
+    max-height: 420px; overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="head-main">
+      <span class="eyebrow">AMD Developer Hackathon · Act II — Track 2</span>
+      <h1>CaptionForge</h1>
+      <p class="lede">
+        Paste a clip URL and watch the Fireworks pipeline work: frames → scene report →
+        Best-of-{{ best_of_n }} candidates → judge picks and self-critiques each style.
+      </p>
+    </div>
+    <button class="theme-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle colour theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+      </svg>
+    </button>
+  </header>
+
+  <div class="pipeline-strip">
+    <span class="model-tag"><b>Vision</b> <code>{{ models.vision }}</code></span>
+    <span class="model-tag"><b>Captions</b> <code>{{ models.text }}</code></span>
+    <span class="model-tag"><b>Judge</b> <code>{{ models.judge }}</code></span>
+  </div>
+
+  <div class="panel">
+    <div class="field">
+      <label class="lbl" for="video_url">Video URL <span class="hint">— direct .mp4 link</span></label>
+      <div class="url-row">
+        <input type="url" id="video_url" placeholder="https://example.com/clip.mp4" spellcheck="false">
+      </div>
+      <div class="examples">
+        {% for ex in examples %}
+        <button type="button" class="example-chip" data-url="{{ ex.url }}">{{ ex.label }}</button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="lbl">Styles <span class="hint">— each scored on accuracy + style match</span></label>
+      <div class="styles-grid">
+        <label class="style-chip" style="--c: var(--formal)">
+          <input type="checkbox" value="formal" checked>
+          <span class="tick"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+          Formal
+        </label>
+        <label class="style-chip" style="--c: var(--sarcastic)">
+          <input type="checkbox" value="sarcastic" checked>
+          <span class="tick"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+          Sarcastic
+        </label>
+        <label class="style-chip" style="--c: var(--humorous_tech)">
+          <input type="checkbox" value="humorous_tech" checked>
+          <span class="tick"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+          Humorous · Tech
+        </label>
+        <label class="style-chip" style="--c: var(--humorous_non_tech)">
+          <input type="checkbox" value="humorous_non_tech" checked>
+          <span class="tick"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+          Humorous · Non-tech
+        </label>
+      </div>
+    </div>
+
+    <button id="go">Generate captions</button>
+
+    <div class="stepper" id="stepper" aria-live="polite">
+      <div class="step" id="step-download" data-status="pending">
+        <span class="bullet"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+        <span>Downloading clip</span><span class="detail"></span>
+      </div>
+      <div class="step" id="step-analyze" data-status="pending">
+        <span class="bullet"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+        <span>Sampling frames → scene report → candidates</span><span class="detail"></span>
+      </div>
+      <div class="step" id="step-judge" data-status="pending">
+        <span class="bullet"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>
+        <span>Judging, picking best &amp; self-critiquing</span><span class="detail"></span>
+      </div>
+    </div>
+
+    <div class="alert" id="alert" role="alert"></div>
+  </div>
+
+  <section id="results">
+    <div class="results-head">
+      <h2>Generated captions</h2>
+      <span class="elapsed" id="elapsed"></span>
+    </div>
+    <div class="cards" id="cards"></div>
+    <details>
+      <summary>Scene report — what the vision model actually saw (Stage 1)</summary>
+      <pre id="scene-report"></pre>
+    </details>
+  </section>
+</div>
+
+<script>
+const STYLE_LABELS = {
+  formal: "Formal",
+  sarcastic: "Sarcastic",
+  humorous_tech: "Humorous · Tech",
+  humorous_non_tech: "Humorous · Non-tech",
+};
+
+/* ---------- Theme ---------------------------------------------------- */
+const root = document.documentElement;
+const savedTheme = localStorage.getItem("cf-theme");
+if (savedTheme) root.dataset.theme = savedTheme;
+
+document.getElementById("theme-btn").addEventListener("click", () => {
+  // "auto" follows the OS; once toggled we pin an explicit theme.
+  const isDark = root.dataset.theme === "dark"
+    || (root.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const next = isDark ? "light" : "dark";
+  root.dataset.theme = next;
+  localStorage.setItem("cf-theme", next);
+});
+
+/* ---------- Elements -------------------------------------------------- */
+const urlInput = document.getElementById("video_url");
+const goBtn    = document.getElementById("go");
+const stepper  = document.getElementById("stepper");
+const alertEl  = document.getElementById("alert");
+const results  = document.getElementById("results");
+const cardsEl  = document.getElementById("cards");
+const elapsedEl= document.getElementById("elapsed");
+const sceneEl  = document.getElementById("scene-report");
+
+document.querySelectorAll(".example-chip").forEach(chip => {
+  chip.addEventListener("click", () => { urlInput.value = chip.dataset.url; urlInput.focus(); });
+});
+urlInput.addEventListener("keydown", e => { if (e.key === "Enter") goBtn.click(); });
+
+/* ---------- Helpers --------------------------------------------------- */
+function showAlert(msg) { alertEl.textContent = msg; alertEl.classList.add("show"); }
+function clearAlert()   { alertEl.classList.remove("show"); }
+
+function setStep(id, status, detail) {
+  const el = document.getElementById("step-" + id);
+  if (!el) return;
+  el.dataset.status = status;
+  if (detail !== undefined) el.querySelector(".detail").textContent = detail || "";
+}
+function resetSteps() {
+  ["download", "analyze", "judge"].forEach(id => setStep(id, "pending", ""));
+}
+
+function addCard({ style, text, words, min_words, max_words, in_range, score }) {
+  const card = document.createElement("article");
+  card.className = "card";
+  card.style.setProperty("--c", `var(--${style})`);
+
+  const top = document.createElement("div");
+  top.className = "card-top";
+
+  const name = document.createElement("span");
+  name.className = "style-name";
+  name.textContent = STYLE_LABELS[style] || style;
+
+  const wc = document.createElement("span");
+  wc.className = "wc";
+  wc.dataset.ok = String(!!in_range);
+  wc.textContent = `${words}w / ${min_words}–${max_words}`;
+  wc.title = in_range ? "Within the required word range" : "Outside the required word range";
+
+  const copy = document.createElement("button");
+  copy.className = "copy";
+  copy.title = "Copy caption";
+  copy.setAttribute("aria-label", "Copy caption");
+  copy.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+    stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.classList.add("copied");
+      setTimeout(() => copy.classList.remove("copied"), 1200);
+    } catch { /* clipboard blocked — ignore */ }
+  });
+
+  top.append(name, wc, copy);
+
+  const body = document.createElement("p");
+  body.className = "caption-text";
+  body.textContent = text;              // textContent, never innerHTML — captions are model output
+
+  card.append(top, body);
+  if (score !== null && score !== undefined) card.title = `Self-critique score: ${score}/10`;
+  cardsEl.appendChild(card);
+}
+
+/* ---------- Run ------------------------------------------------------- */
+goBtn.addEventListener("click", async () => {
+  const videoUrl = urlInput.value.trim();
+  const styles = [...document.querySelectorAll(".style-chip input:checked")].map(i => i.value);
+
+  clearAlert();
+  results.classList.remove("show");
+
+  if (!videoUrl)      return showAlert("Paste a video URL first.");
+  if (!styles.length) return showAlert("Pick at least one style.");
+
+  goBtn.disabled = true;
+  goBtn.textContent = "Generating…";
+  cardsEl.innerHTML = "";
+  sceneEl.textContent = "";
+  elapsedEl.textContent = "";
+  resetSteps();
+  stepper.classList.add("show");
+
+  try {
+    const resp = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_url: videoUrl, styles }),
+    });
+
+    if (!resp.ok || !resp.body) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || `Request failed (${resp.status}).`);
+    }
+
+    // Stream NDJSON so the stepper reflects real pipeline progress.
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop();                       // keep the partial line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+
+        if (msg.event === "stage") {
+          setStep(msg.id, msg.status, msg.detail);
+        } else if (msg.event === "scene") {
+          sceneEl.textContent = msg.report || "(no scene report returned)";
+        } else if (msg.event === "caption") {
+          results.classList.add("show");          // reveal as captions stream in
+          addCard(msg);
+        } else if (msg.event === "done") {
+          elapsedEl.textContent = `${msg.elapsed_seconds}s total`;
+          results.classList.add("show");
+        } else if (msg.event === "error") {
+          throw new Error(msg.message);
+        }
+      }
+    }
+  } catch (e) {
+    showAlert(e.message || "Something went wrong.");
+    ["download", "analyze", "judge"].forEach(id => {
+      const el = document.getElementById("step-" + id);
+      if (el.dataset.status === "active") el.dataset.status = "pending";
+    });
+  } finally {
+    goBtn.disabled = false;
+    goBtn.textContent = "Generate captions";
+  }
+});
+
+/* ---------- Warn early about a missing key ---------------------------- */
+fetch("/api/health").then(r => r.json()).then(h => {
+  if (!h.api_key_set) showAlert("FIREWORKS_API_KEY is not set — add it to your .env file before generating.");
+}).catch(() => {});
+</script>
+</body>
+</html>

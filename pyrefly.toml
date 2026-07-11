@@ -1,0 +1,20 @@
+# Type-checker config (dev-only — never enters the Docker image; the
+# Dockerfile only COPYs requirements.txt + src/).
+#
+# The pipeline modules live in src/ and import each other flatly
+# (`import config`, `from prompts import ...`) because the container runs with
+# WORKDIR /app/src. web_demo/app.py reproduces that at runtime with a
+# sys.path.insert(), which a static analyser cannot follow — without the
+# search-path below, Pyrefly reports false "Cannot find module config /
+# downloader / fireworks_vision_client / judge_polish / prompts" errors.
+search-path = ["src", "web_demo"]
+
+project-excludes = [
+    "**/.venv/**",
+    "**/venv/**",
+    "**/__pycache__/**",
+    "**/scratch_videos/**",
+    "**/docs/**",
+]
+
+python-version = "3.11"

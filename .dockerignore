@@ -1,0 +1,25 @@
+# Keep the Docker build context minimal. Two images build from this repo:
+#   Dockerfile      -> the Track 2 submission (COPYs requirements.txt + src/)
+#   Dockerfile.web  -> the hosted web demo   (also COPYs web_demo/)
+# web_demo/ is therefore NOT ignored, but it never lands in the submission
+# image because that Dockerfile simply doesn't COPY it.
+# .env and .venv must never reach the build context.
+.git
+.gitignore
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.vscode/
+.claude/
+docs/
+output/
+scratch_videos/
+submission_assets/
+input/
+README.md
+.env.example
+.dockerignore
+Dockerfile
+Dockerfile.web

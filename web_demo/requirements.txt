@@ -1,0 +1,4 @@
+flask>=3.0
+# Production WSGI server for the hosted demo (see Dockerfile.web). Not needed
+# for `python web_demo/app.py` local dev.
+gunicorn>=23.0
