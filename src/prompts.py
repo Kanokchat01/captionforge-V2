@@ -42,6 +42,26 @@ STYLE_WORD_RANGES = {
 DEFAULT_WORD_RANGE = (12, 30)
 
 
+# V2 is emoji-free. strip_emojis is the code-level guarantee that no emoji
+# reaches the final output even if a model ignores the "No emoji" instruction.
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF"
+    "\U0001F1E6-\U0001F1FF\U0001F900-\U0001F9FF\U0000FE00-\U0000FE0F"
+    "\U0000200D\U00002139\U00002194-\U000021AA\U00002300-\U000023FF]",
+    flags=re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    """Remove any emoji/pictographs and tidy the spacing they leave behind."""
+    if not text:
+        return text
+    cleaned = _EMOJI_RE.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+([.,!?;:])", r"\1", cleaned)
+    return cleaned
+
+
 # Deterministic per-clip rotation for the humorous_non_tech opening.
 #
 # Why this exists: the style prompt used to merely SUGGEST four openings, and
@@ -107,10 +127,8 @@ EMOJI_PALETTES = {
 def emoji_palette_rule(style: str, variety_index: int) -> str:
     """This clip's assigned emoji palette for one style, or "" if the style
     has none (formal never carries an emoji)."""
-    palette = EMOJI_PALETTES.get(style)
-    if not palette:
-        return ""
-    return palette[variety_index % len(palette)]
+    # V2: personas are emoji-free — no emoji is injected into any style.
+    return ""
 
 
 def stable_variety_index(key: str) -> int:
@@ -138,7 +156,7 @@ TECH_JARGON_RE = re.compile(
     r"algorithm|coding|programming|program|debug(?:ging)?|compile[rd]?|"
     r"server|database|api|cache|latency|bandwidth|firmware|router|"
     r"buffering|glitch|render(?:ing|ed)?|pixel|byte|cpu|gpu|ram|usb|"
-    r"respawn|spawn(?:s|ed|ing)?|npc|hitbox|speed-?run|pathfinding|"
+    r"respawn|spawn(?:s|ed|ing)?|npc|hitbox|speed-?run(?:ning|s)?|pathfinding|"
     r"tetris|minecraft|app|gadget|robot(?:ic)?s?"
     r")\b",
     re.IGNORECASE,
@@ -179,6 +197,7 @@ def sanitize_caption(text: str) -> str:
     head = re.match(r"^(.{4,40}?[,:])\s*\1\s*", cleaned)
     if head:
         cleaned = f"{head.group(1)} {cleaned[head.end():]}"
+    cleaned = strip_emojis(cleaned)  # V2: emoji-free guarantee
     return cleaned.strip()
 
 
@@ -200,61 +219,53 @@ def in_word_range(style: str, text: str) -> bool:
 # creativity without buying points.
 STYLE_RULES = {
     "formal": (
-        'FORMAL — official definition: "Professional, objective, factual '
-        'tone." Aim for roughly 20-40 words. Clear, simple English a news '
-        'anchor would read. No slang, no emojis, no jokes. Do not start '
-        'with "The scene shows" or "The video captures," and do not end '
-        'with a generic summary sentence. Describe the setting generically '
-        '(e.g. "an urban street," "a modern office") — never name a '
-        'specific real-world city, country, or landmark. You may name a '
-        'playback effect (time-lapse, slow motion) ONLY if the analysis '
-        'report itself states it; never name capture equipment or settings '
-        '(drone, lens type, exposure).'
+        'FORMAL — official definition: "Professional, objective, factual tone." '
+        'Persona: a composed, authoritative documentary narrator or museum curator. '
+        'Roughly 20-40 words. Describe ONLY what is visibly on screen in precise, '
+        'elevated, professional English — measured and objective, with zero emotion, '
+        'zero jokes, no slang, and no emoji. Do not open with "The scene shows" or '
+        '"The video captures," and do not end on a generic summary. Describe the '
+        'setting generically ("an urban street," "a modern office") — never name a '
+        'real city, country, or landmark; name a playback effect (time-lapse, slow '
+        'motion) only if the report states it, and never name capture equipment '
+        '(drone, lens, exposure), and NEVER name the capture technique behind a visible '
+        'effect — do not write "long exposure," "long-exposure," "time-lapse," '
+        '"timelapse," or "slow shutter"; describe only the visible effect instead '
+        '(e.g. "vehicles appear as streaks of light"). Only state what the report '
+        'confirms; never escalate '
+        'a lowered or downward gaze into "eyes closed" or "asleep."'
     ),
     "sarcastic": (
-        'SARCASTIC — official definition: "Dry, ironic, lightly mocking." '
-        'Aim for roughly 12-30 words. Deadpan understatement beats hype: '
-        'short, flat sentences in subject-verb-object order. Mock something '
-        'specific and concrete in THIS clip — the irony comes from the '
-        'flat, matter-of-fact delivery of an absurd or mundane observation, '
-        'never from hype or exclamation. Avoid loud Gen-Z hype slang '
-        '("main character energy," "aura points," "cooked," "no cap") — '
-        'a light touch of contemporary phrasing is fine if it stays '
-        'understated. A dry, lightly mocking punchline ending lands well. '
-        'EMOJI: this clip has an assigned emoji palette (given below) — use '
-        'only that. Its job is to MARK THE IRONY, never to label the subject: '
-        'a plain subject emoji (🐕 🌊 🚗) kills the deadpan, and the worn-out '
-        'reaction faces 😐 🙄 are banned outright.'
+        'SARCASTIC — official definition: "Dry, ironic, lightly mocking." Persona: a '
+        'deadpan play-by-play commentator forced to narrate the most mundane footage '
+        'of their career as if it were a dramatic sporting event, then flatly '
+        'deflating it. Roughly 12-30 words. Short, flat sentences in '
+        'subject-verb-object order. The irony comes from treating something ordinary '
+        'and specific in THIS clip with mock-gravity and then undercutting it — never '
+        'from hype, exclamation, or Gen-Z slang. Mock something concrete that is '
+        'actually on screen; do not invent a state the report does not confirm. No emoji.'
     ),
     "humorous_tech": (
-        'HUMOROUS_TECH — official definition: "Funny, with technology or '
-        'programming references." Aim for roughly 12-30 words. Build ONE '
-        'clear tech or programming joke on something actually happening in '
-        'the video — explicitly name the specific subject, object, or '
-        'action from the report (the actual animal, vehicle, or person and '
-        'what it is doing). A generic tech pun that could be pasted onto '
-        'any video is a FAIL. One core joke, punchy delivery. EMOJI: exactly '
-        '1, from this clip\'s assigned palette (given below); its job is to '
-        'REINFORCE THE TECH FRAME that defines this style. An animal or '
-        'scenery emoji here quietly undercuts the tech reference the judge '
-        'is looking for.'
+        'HUMOROUS_TECH — official definition: "Funny, with technology or programming '
+        'references." Persona: a relentlessly over-optimistic tech-startup founder who '
+        'reframes whatever is on screen as a disruptive product, pitch, or opportunity. '
+        'Roughly 12-30 words. Pick exactly ONE tech or startup idea (an MVP, scaling, '
+        'latency, shipping, a pivot, a seed round) and build the whole joke around it, '
+        'tied explicitly to the specific subject or action from the report — a generic '
+        'tech pun that could be pasted onto any video is a FAIL. Stay on the visual; do '
+        'not drift into talking about your own job. Vary the startup angle from clip to '
+        'clip — do not always reach for an MVP or "just shipped"; rotate across '
+        'funding rounds, pivots, growth metrics, demo day, tech debt, or scaling. No emoji.'
     ),
     "humorous_non_tech": (
-        'HUMOROUS_NON_TECH — official definition: "Funny, everyday humour '
-        'with no technical jargon." Aim for roughly 12-30 words. Relatable '
-        'everyday humor grounded in what the clip actually shows — match the '
-        'scenario to the video\'s domain (exhaustion for sports, hunger for '
-        'food, social dread for interviews, weather-ruined plans...). The '
-        'joke must be a real human moment, not a restatement of the scene. '
-        'Zero technical content of any kind — no computing, internet, gaming, '
-        'or engineering references, and no video-game names (a line like "a '
-        'game of human Tetris" already breaks this style). EMOJI: exactly 1, '
-        'from this clip\'s assigned '
-        'palette (given below); its job is to carry the HUMAN FEELING. A '
-        'device or computing emoji (⌨️ 💻 🖥️ 📶 🔌) is banned outright — '
-        'this style is defined as having NO technical content, and a tech '
-        'emoji hands the judge a reason to mark it down. Use exactly the '
-        'assigned opening phrase given below.'
+        'HUMOROUS_NON_TECH — official definition: "Funny, everyday humour with no '
+        'technical jargon." Persona: a gloriously melodramatic friend who narrates '
+        'ordinary moments as if they were high personal drama. Roughly 12-30 words. '
+        'Relatable, big-feelings everyday humor grounded in what the clip actually '
+        'shows, matched to its domain. ZERO technical content of any kind — no '
+        'computing, internet, gaming, or engineering references, and no video-game '
+        'names. The joke must be a real human moment, not a restatement of the scene. '
+        'No emoji. Begin the caption with the exact assigned opening phrase given below.'
     ),
 }
 

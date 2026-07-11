@@ -60,15 +60,15 @@ FALLBACK_CAPTION_BY_STYLE = {
     ),
     "sarcastic": (
         "A video exists. Things happen in it. Someone somewhere calls this "
-        "peak content. Riveting stuff, honestly. 🙄"
+        "peak content. Riveting stuff, honestly."
     ),
     "humorous_tech": (
         "This clip loaded fine, but my brain is still buffering at 240p "
-        "trying to process everything happening on screen. 💻"
+        "trying to process everything happening on screen."
     ),
     "humorous_non_tech": (
         "POV: you press play with zero expectations and still end up "
-        "watching the whole thing until the very end. 😅"
+        "watching the whole thing until the very end."
     ),
 }
 
