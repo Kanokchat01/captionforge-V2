@@ -120,19 +120,11 @@ def _caption_one_style(captioner, frames_b64: List[str], style: str,
     return caption
 
 
-def caption_clip_qwen_direct(captioner, ensure_downloaded: Callable[[], str],
-                             styles: List[str],
-                             time_remaining: Callable[[], float]) -> Dict[str, str]:
-    """All requested styles for one clip, in parallel. A single style's
-    failure returns "" for that style only; raises only when the frames
-    stage itself fails (caller falls back for the whole clip)."""
-    local_path = ensure_downloaded()
-    t0 = time.monotonic()
-    frames_b64 = extract_frames_b64(local_path, config.QWEN_DIRECT_FRAMES,
-                                    config.QWEN_DIRECT_FRAME_MAX_WIDTH)
-    print(f"[qwen-direct] {len(frames_b64)} frames @{config.QWEN_DIRECT_FRAME_MAX_WIDTH}px "
-          f"in {time.monotonic() - t0:.2f}s")
-
+def caption_styles(captioner, frames_b64: List[str], styles: List[str],
+                   time_remaining: Callable[[], float]) -> Dict[str, str]:
+    """All requested styles for one already-extracted frame set, in parallel.
+    A single style's failure returns "" for that style only. Also the unit
+    main.py's salvage pass re-runs for styles that shipped a fallback."""
     results: Dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(styles))) as pool:
         futures = {pool.submit(_caption_one_style, captioner, frames_b64, s,
@@ -144,3 +136,23 @@ def caption_clip_qwen_direct(captioner, ensure_downloaded: Callable[[], str],
                 print(f"[qwen-direct] {style}: unexpected failure:\n{traceback.format_exc()}")
                 results[style] = ""
     return results
+
+
+def caption_clip_qwen_direct(captioner, ensure_downloaded: Callable[[], str],
+                             styles: List[str],
+                             time_remaining: Callable[[], float],
+                             frames_sink: "dict | None" = None) -> Dict[str, str]:
+    """All requested styles for one clip, in parallel. A single style's
+    failure returns "" for that style only; raises only when the frames
+    stage itself fails (caller falls back for the whole clip). `frames_sink`,
+    when given, receives the extracted frames under "frames_b64" so the
+    caller's salvage pass can retry styles later without re-downloading."""
+    local_path = ensure_downloaded()
+    t0 = time.monotonic()
+    frames_b64 = extract_frames_b64(local_path, config.QWEN_DIRECT_FRAMES,
+                                    config.QWEN_DIRECT_FRAME_MAX_WIDTH)
+    print(f"[qwen-direct] {len(frames_b64)} frames @{config.QWEN_DIRECT_FRAME_MAX_WIDTH}px "
+          f"in {time.monotonic() - t0:.2f}s")
+    if frames_sink is not None:
+        frames_sink["frames_b64"] = frames_b64
+    return caption_styles(captioner, frames_b64, styles, time_remaining)

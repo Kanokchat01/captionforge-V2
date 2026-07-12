@@ -113,6 +113,19 @@ FINALIZATION_RESERVE_SECONDS = float(os.environ.get("FINALIZATION_RESERVE_SECOND
 # straight to a fallback caption. Prevents starting doomed work.
 CRITICAL_TIME_THRESHOLD_SECONDS = float(os.environ.get("CRITICAL_TIME_THRESHOLD_SECONDS", "45"))
 
+# --- Salvage pass (qwen_direct only): convert leftover time budget into
+# reliability. A normal 3-clip run uses ~15s of the 540s budget; a transient
+# Fireworks/network blip during the judged run currently turns into permanent
+# generic fallback captions that score near zero on accuracy. After the main
+# pass, every style that shipped a fallback is re-attempted in rounds (with a
+# pause so the blip can clear), strictly bounded by the global clock.
+ENABLE_SALVAGE_PASS = os.environ.get("ENABLE_SALVAGE_PASS", "true").lower() == "true"
+# Don't start (or continue) salvage work below this much remaining time.
+SALVAGE_MIN_TIME_REMAINING_SECONDS = float(os.environ.get("SALVAGE_MIN_TIME_REMAINING_SECONDS", "90"))
+# Wait between rounds — instantly re-hitting the same dying endpoint is useless.
+SALVAGE_ROUND_PAUSE_SECONDS = float(os.environ.get("SALVAGE_ROUND_PAUSE_SECONDS", "15"))
+MAX_SALVAGE_ROUNDS = int(os.environ.get("MAX_SALVAGE_ROUNDS", "3"))
+
 REQUIRED_STYLES = {"formal", "sarcastic", "humorous_tech", "humorous_non_tech"}
 
 # --- v6 primary engine: qwen_direct (one multimodal call per style) ---

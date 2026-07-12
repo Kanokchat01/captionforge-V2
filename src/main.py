@@ -133,7 +133,8 @@ def order_tasks_heaviest_first(tasks: list) -> list:
     return sorted(tasks, key=lambda t: weights.get(t.get("task_id"), 0.0), reverse=True)
 
 
-def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: int = 0) -> dict:
+def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: int = 0,
+                 salvage_ctx: "dict | None" = None) -> dict:
     task_id = task.get("task_id", "unknown")
     video_url = task.get("video_url")
     styles = task.get("styles") or sorted(config.REQUIRED_STYLES)
@@ -166,12 +167,25 @@ def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: in
         # per style, deterministic guards only — see qwen_direct.py.
         if config.CAPTION_ASSEMBLY == "qwen_direct":
             final_captions = {}
+            frames_sink: dict = {}
             try:
                 final_captions = qwen_direct.caption_clip_qwen_direct(
-                    captioner, ensure_downloaded, styles, time_remaining)
+                    captioner, ensure_downloaded, styles, time_remaining,
+                    frames_sink=frames_sink)
             except Exception as e:
                 print(f"[qwen-direct] task {task_id} failed wholesale: {e}")
                 traceback.print_exc()
+            # Styles about to ship a generic fallback are registered for the
+            # end-of-run salvage pass — a fallback caption scores near zero
+            # on accuracy, so re-attempting with leftover budget is the
+            # single cheapest points-protection we have.
+            missing = [s for s in styles if not final_captions.get(s)]
+            if missing and salvage_ctx is not None:
+                salvage_ctx[task_id] = {
+                    "video_url": video_url,
+                    "frames_b64": frames_sink.get("frames_b64"),
+                    "missing": missing,
+                }
             # Never leave a requested style empty — a missing style scores
             # zero for the whole clip per the official rules.
             for style in styles:
@@ -265,6 +279,66 @@ def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: in
                 pass
 
 
+def salvage_fallbacks(salvage_ctx: dict, results_by_id: dict, captioner) -> None:
+    """End-of-run reliability pass (qwen_direct only): re-attempt every style
+    that shipped a generic fallback because its caption calls failed. Runs in
+    rounds with a pause in between (transient API/network blips usually clear
+    within seconds), strictly bounded by the global clock. Uses the frames
+    cached by the main pass when available; re-downloads only when the
+    failure happened before frame extraction."""
+    from fireworks_vision_client import extract_frames_b64
+
+    def pending_items():
+        # list() snapshot: a zombie worker past the global deadline could
+        # still insert into salvage_ctx while we iterate.
+        out = []
+        for tid, ctx in list(salvage_ctx.items()):
+            row = results_by_id.get(tid)
+            if row is not None and ctx.get("missing"):
+                out.append((tid, ctx, row))
+        return out
+
+    total_missing = sum(len(ctx["missing"]) for _, ctx, _ in pending_items())
+    if not total_missing:
+        return
+    print(f"[salvage] {total_missing} fallback caption(s) eligible for re-attempt")
+
+    for round_no in range(1, config.MAX_SALVAGE_ROUNDS + 1):
+        items = pending_items()
+        if not items:
+            break
+        if time_remaining() <= (config.SALVAGE_MIN_TIME_REMAINING_SECONDS
+                                + config.SALVAGE_ROUND_PAUSE_SECONDS):
+            print("[salvage] clock too low for another round — stopping")
+            break
+        # Let the blip clear instead of instantly re-hitting the same error.
+        time.sleep(config.SALVAGE_ROUND_PAUSE_SECONDS)
+        for tid, ctx, row in items:
+            if time_remaining() <= config.SALVAGE_MIN_TIME_REMAINING_SECONDS:
+                print("[salvage] clock too low — stopping mid-round")
+                return
+            frames = ctx.get("frames_b64")
+            if not frames:
+                try:
+                    local_path = download_video(ctx["video_url"])
+                    frames = extract_frames_b64(local_path, config.QWEN_DIRECT_FRAMES,
+                                                config.QWEN_DIRECT_FRAME_MAX_WIDTH)
+                    ctx["frames_b64"] = frames
+                except Exception as e:
+                    print(f"[salvage] {tid}: frames still unavailable ({e})")
+                    continue
+            got = qwen_direct.caption_styles(captioner, frames, ctx["missing"], time_remaining)
+            recovered = [s for s, cap in got.items() if cap]
+            for s in recovered:
+                row["captions"][s] = got[s]
+            ctx["missing"] = [s for s in ctx["missing"] if s not in recovered]
+            if recovered:
+                print(f"[salvage] {tid}: recovered {', '.join(recovered)} (round {round_no})")
+
+    left = sum(len(ctx.get("missing") or []) for ctx in salvage_ctx.values())
+    print(f"[salvage] done — {left} caption(s) still on fallback")
+
+
 def write_results(results: list) -> None:
     """Write the final results list to OUTPUT_PATH as valid JSON. This is the
     one artifact the judge reads — it must always be written."""
@@ -336,13 +410,15 @@ def main():
     results_by_id = {}
 
     pool = ThreadPoolExecutor(max_workers=config.CONCURRENCY)
+    # Tasks register their fallback-filled styles here for the salvage pass.
+    salvage_ctx: dict = {}
     # variety_index comes from the task's position in the INPUT order (not the
     # heaviest-first scheduling order) so the humorous_non_tech openings
     # round-robin evenly and deterministically across the batch — see
     # prompts.NON_TECH_OPENINGS.
     futures = {
         pool.submit(process_task, task, captioner, judge,
-                    original_order.get(task.get("task_id"), 0)): task
+                    original_order.get(task.get("task_id"), 0), salvage_ctx): task
         for task in scheduled_tasks
     }
 
@@ -383,7 +459,18 @@ def main():
     results = [results_by_id[t.get("task_id", "unknown")] for t in tasks]
     results.sort(key=lambda r: original_order.get(r["task_id"], 0))
 
+    # Checkpoint write BEFORE salvage: from here on a valid results.json
+    # exists on disk no matter what the salvage pass does.
     write_results(results)
+
+    if config.ENABLE_SALVAGE_PASS and config.CAPTION_ASSEMBLY == "qwen_direct":
+        try:
+            salvage_fallbacks(salvage_ctx, results_by_id, captioner)
+        except Exception as e:
+            print(f"[salvage] pass crashed ({e}) — keeping checkpointed results")
+            traceback.print_exc()
+        # Rows are mutated in place, so rewrite even after a partial round.
+        write_results(results)
 
     elapsed = time.monotonic() - START_TIME
     print(f"[+] Wrote {len(results)} results to {config.OUTPUT_PATH} in {elapsed:.1f}s "

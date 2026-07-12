@@ -43,9 +43,15 @@ from prompts import (
     sanitize_caption,
 )
 
-MAX_API_RETRIES = 2
-RETRY_BACKOFF_SECONDS = [3, 6]
-RETRYABLE_MARKERS = ("503", "429", "unavailable", "rate limit", "resource_exhausted", "timeout", "deadline", "502", "504")
+# Total attempts = MAX_API_RETRIES + 1. A full run uses ~3% of the 540s
+# budget, so retries are nearly free; a transient blip during the judged run
+# must cost a retry, not a clip's captions.
+MAX_API_RETRIES = 3
+RETRY_BACKOFF_SECONDS = [3, 6, 12]
+# "connection"/"reset"/"refused" cover requests.ConnectionError strings, which
+# carry no HTTP status code and previously fell through as non-retryable.
+RETRYABLE_MARKERS = ("503", "429", "unavailable", "rate limit", "resource_exhausted",
+                     "timeout", "deadline", "502", "504", "500", "connection", "reset", "refused")
 
 
 def _is_retryable(exc: Exception) -> bool:
