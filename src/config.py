@@ -46,6 +46,15 @@ FIREWORKS_NATIVE_VIDEO_MODEL = os.environ.get("FIREWORKS_NATIVE_VIDEO_MODEL", "a
 # Whole-clip analysis of a 2-min UHD video (Fireworks fetches the URL
 # server-side) needs more headroom than a frame call.
 FIREWORKS_NATIVE_VIDEO_TIMEOUT_SECONDS = float(os.environ.get("FIREWORKS_NATIVE_VIDEO_TIMEOUT_SECONDS", "90"))
+# Stage 1.5: after the native scene report, re-attach the video and have the
+# model verify its own report, deleting claims it can't confirm (PADAYON-style
+# self-correction). Single attempt, sanity-gated, falls back to the unverified
+# report on any failure — it can only remove hallucinations, never add them.
+ENABLE_REPORT_VERIFICATION = os.environ.get("ENABLE_REPORT_VERIFICATION", "true").lower() == "true"
+FIREWORKS_VERIFY_TIMEOUT_SECONDS = float(os.environ.get("FIREWORKS_VERIFY_TIMEOUT_SECONDS", "45"))
+# Skip the verification pass when the global clock is this low — captions from
+# an unverified report still beat fallback captions from a timed-out clip.
+VERIFY_MIN_TIME_REMAINING_SECONDS = float(os.environ.get("VERIFY_MIN_TIME_REMAINING_SECONDS", "180"))
 FIREWORKS_VISION_MODEL = os.environ.get("FIREWORKS_VISION_MODEL", "accounts/fireworks/models/kimi-k2p7-code")
 # Used when the primary vision model fails on a clip (degrade chain).
 FIREWORKS_VISION_FALLBACK_MODEL = os.environ.get("FIREWORKS_VISION_FALLBACK_MODEL", "accounts/fireworks/models/qwen3p7-plus")
@@ -105,3 +114,44 @@ FINALIZATION_RESERVE_SECONDS = float(os.environ.get("FINALIZATION_RESERVE_SECOND
 CRITICAL_TIME_THRESHOLD_SECONDS = float(os.environ.get("CRITICAL_TIME_THRESHOLD_SECONDS", "45"))
 
 REQUIRED_STYLES = {"formal", "sarcastic", "humorous_tech", "humorous_non_tech"}
+
+# --- v6 primary engine: qwen_direct (one multimodal call per style) ---
+# CAPTION_ASSEMBLY selects the caption engine:
+#   qwen_direct (default) — uniform frames go straight to the vision model,
+#       ONE call per style, caption extracted from <caption_output> tags.
+#       No describe stage, no Best-of-N, no judge, no critique.
+#   legacy_v5 — the previous scene-report -> Best-of-N -> judge pipeline
+#       (kept for rollback only).
+CAPTION_ASSEMBLY = (os.environ.get("CAPTION_ASSEMBLY") or "qwen_direct").strip().lower()
+if CAPTION_ASSEMBLY not in ("qwen_direct", "legacy_v5"):
+    print(f"[config] unknown CAPTION_ASSEMBLY={CAPTION_ASSEMBLY!r} — using qwen_direct")
+    CAPTION_ASSEMBLY = "qwen_direct"
+
+
+def _env_int(name: str, default: int) -> int:
+    # Docker ARG defaults arrive as empty strings — treat "" as unset.
+    return int(os.environ.get(name) or default)
+
+
+QWEN_DIRECT_MODEL = os.environ.get("QWEN_DIRECT_MODEL") or "accounts/fireworks/models/qwen3p7-plus"
+# Spare tire: the identical call on a different model family, used only after
+# the primary model has failed all transport retries for a style.
+QWEN_DIRECT_SPARE_MODEL = os.environ.get("QWEN_DIRECT_SPARE_MODEL") or "accounts/fireworks/models/kimi-k2p7-code"
+QWEN_DIRECT_FRAMES = _env_int("QWEN_DIRECT_FRAMES", 4)
+QWEN_DIRECT_FRAME_MAX_WIDTH = _env_int("QWEN_DIRECT_FRAME_MAX_WIDTH", 1024)
+QWEN_DIRECT_MAX_TOKENS = _env_int("QWEN_DIRECT_MAX_TOKENS", 400)
+QWEN_DIRECT_TEMPERATURE = float(os.environ.get("QWEN_DIRECT_TEMPERATURE") or 0.7)
+QWEN_DIRECT_TIMEOUT_SECONDS = float(os.environ.get("QWEN_DIRECT_TIMEOUT_SECONDS") or 45)
+# 0 = pure recipe parity (tag extraction + one retry + never-empty only);
+# 1 = adds sanitize_caption + one style_violations()-driven regeneration.
+QWEN_DIRECT_GUARD_LEVEL = _env_int("QWEN_DIRECT_GUARD_LEVEL", 1)
+
+
+def _qd_style_temp(style: str):
+    v = os.environ.get(f"QWEN_DIRECT_TEMP_{style.upper()}", "")
+    return float(v) if v else None
+
+
+# Optional per-style temperature overrides (experiment R2: formal cold,
+# humor hot). None = use QWEN_DIRECT_TEMPERATURE.
+QWEN_DIRECT_TEMPERATURE_BY_STYLE = {s: _qd_style_temp(s) for s in sorted(REQUIRED_STYLES)}

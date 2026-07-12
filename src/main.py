@@ -1,15 +1,18 @@
 """
 CaptionForge — Track 2: Video Captioning Agent
 
-Reads /input/tasks.json, then per task runs the Fireworks pipeline:
-minimax-m3 watches the WHOLE clip via video_url (no download needed; falls
-back to downloading + kimi-k2p7-code over extracted frames) -> glm-5p2 writes
-Best-of-N candidate caption sets -> qwen3p7-plus judge picks the best per
-style, polishes humor styles, and self-critiques (all model roles chosen by
-benchmark, see config.py). Writes /output/results.json. Must exit 0, must
-finish within 10 minutes total, must never crash the whole run because one
-clip failed, and must never let one stuck task blow the whole container's
-time budget.
+Reads /input/tasks.json, captions every clip in each requested style, writes
+/output/results.json. Two engines, selected by config.CAPTION_ASSEMBLY:
+
+  qwen_direct (default) — uniform frames go straight to the vision model,
+      ONE multimodal call per style, deterministic code-only guards on top
+      (see qwen_direct.py). No describe stage, no judge, no critique.
+  legacy_v5 — the previous scene-report -> Best-of-N -> judge pipeline,
+      kept only for rollback.
+
+Must exit 0, must finish within 10 minutes total, must never crash the whole
+run because one clip failed, and must never let one stuck task blow the
+whole container's time budget.
 """
 import json
 import os
@@ -24,9 +27,10 @@ from dotenv import load_dotenv
 load_dotenv()  # no-op in the real submission container (no .env bundled); used for local dev
 
 import config
+import qwen_direct
 from downloader import download_video, probe_size_mb
 from judge_polish import JudgeAssistant
-from prompts import has_tech_jargon, in_word_range, sanitize_caption, word_count
+from prompts import in_word_range, sanitize_caption, style_violations, word_count
 
 START_TIME = time.monotonic()
 DEADLINE = START_TIME + config.TOTAL_BUDGET_SECONDS
@@ -37,9 +41,11 @@ HUMOR_STYLES_FOR_POLISH = {"sarcastic", "humorous_tech", "humorous_non_tech"}
 
 
 def make_captioner():
-    """Returns the Fireworks-hosted frame-based captioner."""
+    """Returns the Fireworks-hosted captioner. Which engine drives it is
+    decided per task by config.CAPTION_ASSEMBLY."""
     from fireworks_vision_client import FireworksCaptioner
-    print("[*] Using Fireworks frame-based analysis (no audio understanding).")
+    print(f"[*] Caption engine: {config.CAPTION_ASSEMBLY} "
+          f"(model {config.QWEN_DIRECT_MODEL if config.CAPTION_ASSEMBLY == 'qwen_direct' else config.FIREWORKS_TEXT_MODEL})")
     return FireworksCaptioner()
 
 
@@ -54,21 +60,25 @@ def time_remaining() -> float:
 # still earns partial style credit when a clip fails.
 FALLBACK_CAPTION_BY_STYLE = {
     "formal": (
-        "This clip presents its subject in a real-world setting, recorded "
-        "with steady framing and natural lighting, moving through several "
-        "distinct moments from beginning to end of the sequence."
+        "This clip presents its central subject in a real-world setting, "
+        "recorded with steady framing under natural lighting, and it moves "
+        "through several distinct moments between its opening seconds and "
+        "its final frame."
     ),
     "sarcastic": (
-        "A video exists. Things happen in it. Someone somewhere calls this "
-        "peak content. Riveting stuff, honestly."
+        "A video exists. Things happen in it, one after another, at a truly "
+        "relentless pace. Somewhere out there, someone calls this peak "
+        "content. Riveting stuff, honestly."
     ),
     "humorous_tech": (
-        "This clip loaded fine, but my brain is still buffering at 240p "
-        "trying to process everything happening on screen."
+        "My brain hit its loading screen the moment this clip started and "
+        "never recovered; somewhere in there, a tiny error message is still "
+        "waiting for someone to click OK."
     ),
     "humorous_non_tech": (
-        "POV: you press play with zero expectations and still end up "
-        "watching the whole thing until the very end."
+        "I pressed play with zero expectations, and somehow this clip still "
+        "kept me watching to the very end, the same way grandma keeps me at "
+        "the dinner table."
     ),
 }
 
@@ -152,26 +162,47 @@ def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: in
                 local_path = download_video(video_url)
             return local_path
 
+        # v6 primary engine: frames straight to the vision model, one call
+        # per style, deterministic guards only — see qwen_direct.py.
+        if config.CAPTION_ASSEMBLY == "qwen_direct":
+            final_captions = {}
+            try:
+                final_captions = qwen_direct.caption_clip_qwen_direct(
+                    captioner, ensure_downloaded, styles, time_remaining)
+            except Exception as e:
+                print(f"[qwen-direct] task {task_id} failed wholesale: {e}")
+                traceback.print_exc()
+            # Never leave a requested style empty — a missing style scores
+            # zero for the whole clip per the official rules.
+            for style in styles:
+                final_captions[style] = final_captions.get(style) or fallback_captions(
+                    [style], "qwen_direct produced no caption")[style]
+            elapsed = time.monotonic() - t_start
+            print(f"[+] Task {task_id} completed (qwen_direct) in {elapsed:.2f}s")
+            return {"task_id": task_id, "captions": final_captions}
+
         # caption_clip runs the 2-stage pipeline (scene report -> Best-of-N
         # candidate caption sets) and returns the scene report alongside the
         # candidates. Do NOT store this on the shared captioner instance —
         # it's reused across worker threads, so per-call state must stay
         # local to this call.
         candidates, scene = captioner.caption_clip(ensure_downloaded, styles, video_url=video_url,
-                                                   variety_index=variety_index)
+                                                   variety_index=variety_index,
+                                                   time_remaining=time_remaining)
 
         final_captions = {}
         for style in styles:
             style_options = [c.get(style, "") for c in candidates if c.get(style)]
-            # humorous_non_tech is defined as having NO technical jargon, so a
-            # candidate carrying any is a style-match penalty waiting to
-            # happen — drop those before the judge can pick one.
-            if style == "humorous_non_tech":
-                clean = [o for o in style_options if not has_tech_jargon(o)]
-                if clean and len(clean) < len(style_options):
-                    print(f"[tech-guard] {style}: dropped {len(style_options) - len(clean)} "
-                          f"candidate(s) containing technical jargon")
-                style_options = clean or style_options
+            # Code-level style guard: drop candidates that mechanically break
+            # their style's definition (emoji, non-English characters, jargon
+            # in humorous_non_tech, NO tech term in humorous_tech, "!" in
+            # formal...) before the judge ever ranks them — fall back to the
+            # full pool only if every candidate violates.
+            clean = [o for o in style_options if not style_violations(style, o)]
+            if clean and len(clean) < len(style_options):
+                print(f"[style-guard] {style}: dropped {len(style_options) - len(clean)} "
+                      f"candidate(s) with mechanical style violations")
+            style_options = clean or style_options
             # Prefer candidates that already satisfy the style's word-count
             # rule; only fall back to the full pool when none are compliant.
             compliant = [o for o in style_options if in_word_range(style, o)]
@@ -199,6 +230,19 @@ def process_task(task: dict, captioner, judge: JudgeAssistant, variety_index: in
                         break
                     hint = f"{result} (reviewer feedback to address: {feedback})" if feedback else result
                     result = guarded_polish(judge, style, scene, hint, baseline=result)
+
+            # Last line of defence: if the final caption still carries a
+            # mechanical violation (possible when every candidate violated,
+            # or a polish introduced one), spend ONE deterministic repair
+            # attempt on it — and keep the repair only if it actually fixed
+            # the problem without introducing a new one.
+            violations = result and style_violations(style, result)
+            if violations and judge.available and time_remaining() > ENHANCEMENT_TIME_MARGIN_SECONDS:
+                print(f"[style-guard] {style}: final caption violates ({'; '.join(violations)}) — repairing")
+                hint = f"{result} (rewrite fixing exactly these problems: {'; '.join(violations)})"
+                repaired = guarded_polish(judge, style, scene, hint, baseline=result)
+                if repaired and not style_violations(style, repaired):
+                    result = repaired
 
             # Never leave a requested style empty — a missing style scores
             # zero for the whole clip per the official rules.

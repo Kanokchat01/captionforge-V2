@@ -33,7 +33,13 @@ class JudgeAssistant:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def _chat(self, system_prompt: str, user_prompt: str) -> str:
+    def _chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.0) -> str:
+        # temperature defaults to 0.0: pick-best and critique are JUDGING
+        # tasks — the same caption must always get the same verdict, or the
+        # critique loop polishes captions on coin flips. polish() overrides
+        # with 0.7 because rewriting is a creative task.
+        # max_tokens 450: a polished 50-word formal caption plus the judge's
+        # JSON both fit; the old 250 could truncate a polish rewrite.
         headers = {"Authorization": f"Bearer {self.api_key}"}
         resp = requests.post(
             f"{self.base_url}/chat/completions",
@@ -44,8 +50,8 @@ class JudgeAssistant:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 250,
-                "temperature": 0.7,
+                "max_tokens": 450,
+                "temperature": temperature,
                 "reasoning_effort": "none",
             },
             timeout=config.PER_REQUEST_TIMEOUT_SECONDS,
@@ -79,6 +85,7 @@ class JudgeAssistant:
             result = self._chat(
                 JUDGE_POLISH_SYSTEM_PROMPT,
                 build_judge_polish_prompt(style, scene_hint, draft_caption),
+                temperature=0.7,
             )
             print(f"[judge-polish] {style} via {self.model}: OK "
                   f"({len(draft_caption)} -> {len(result)} chars)")

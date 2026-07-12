@@ -24,8 +24,31 @@ WORKDIR /app/src
 # --build-arg, not supplied at `docker run` time. Never put the real key
 # literally in this file or commit it — only pass it on the build command
 # line (see README.md for the exact submission build command).
+# ONLY the Fireworks key goes in. OPENROUTER_API_KEY is a local-eval-only
+# credential and must NEVER be baked: this image is publicly pullable.
 ARG FIREWORKS_API_KEY=""
 ENV FIREWORKS_API_KEY=${FIREWORKS_API_KEY}
+
+# --- v6 engine knobs (baked per submission rung; empty string = default) ---
+ARG CAPTION_ASSEMBLY="qwen_direct"
+ARG QWEN_DIRECT_GUARD_LEVEL="1"
+ARG QWEN_DIRECT_FRAMES="4"
+ARG QWEN_DIRECT_TEMP_FORMAL=""
+ARG QWEN_DIRECT_TEMP_SARCASTIC=""
+ARG QWEN_DIRECT_TEMP_HUMOROUS_TECH=""
+ARG QWEN_DIRECT_TEMP_HUMOROUS_NON_TECH=""
+ENV CAPTION_ASSEMBLY=${CAPTION_ASSEMBLY} \
+    QWEN_DIRECT_GUARD_LEVEL=${QWEN_DIRECT_GUARD_LEVEL} \
+    QWEN_DIRECT_FRAMES=${QWEN_DIRECT_FRAMES} \
+    QWEN_DIRECT_TEMP_FORMAL=${QWEN_DIRECT_TEMP_FORMAL} \
+    QWEN_DIRECT_TEMP_SARCASTIC=${QWEN_DIRECT_TEMP_SARCASTIC} \
+    QWEN_DIRECT_TEMP_HUMOROUS_TECH=${QWEN_DIRECT_TEMP_HUMOROUS_TECH} \
+    QWEN_DIRECT_TEMP_HUMOROUS_NON_TECH=${QWEN_DIRECT_TEMP_HUMOROUS_NON_TECH}
+
+# 24 parallel vision calls (6 clips x 4 styles) risk 429 clustering; 4x4=16
+# keeps well under it and the engine is fast enough (~10s/clip) that the
+# 540s budget still clears with huge headroom.
+ENV CONCURRENCY="4"
 
 # No CLI args: the harness runs the container, main.py reads /input/tasks.json
 # and writes /output/results.json on its own, then exits 0.

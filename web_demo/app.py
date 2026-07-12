@@ -161,9 +161,8 @@ def generate():
 
             # --- Stage 2: scene report (native video, frame fallback) -> Best-of-N
             yield ndjson("stage", id="analyze", status="active")
-            # One clip at a time here, so there's no batch position to rotate
-            # on — derive a stable angle from the URL instead (same clip always
-            # gets the same humorous_non_tech opening).
+            # variety_index is a legacy no-op (per-clip opening/emoji rotation
+            # was removed 2026-07-12); kept so the interface stays stable.
             candidates, scene = captioner.caption_clip(
                 ensure_downloaded, styles, video_url=video_url,
                 variety_index=stable_variety_index(video_url))

@@ -39,6 +39,7 @@ from prompts import (
     build_caption_generation_prompt,
     build_frame_scene_analysis_prompt,
     build_native_video_scene_analysis_prompt,
+    build_report_verification_prompt,
     sanitize_caption,
 )
 
@@ -75,19 +76,20 @@ def _probe_duration_seconds(video_path: str) -> float:
         return 10.0  # unknown duration fallback — still try to grab a few frames
 
 
-def _extract_frames(video_path: str, max_frames: int, workdir: str):
+def _extract_frames(video_path: str, max_frames: int, workdir: str, max_width: int = 0):
     """Seeks to `max_frames` evenly-spaced timestamps and grabs one JPEG
     frame at each via ffmpeg. Returns a list of (timestamp_seconds, jpeg_bytes).
     Uses per-timestamp -ss seeking (accurate, one process per frame) rather
     than a single fps= filter pass — max_frames is small (default 8) so the
     extra process overhead is negligible and timestamps come out exact.
 
-    Frames are downscaled to config.FIREWORKS_FRAME_MAX_WIDTH (default
-    768px wide, aspect-preserved, never upscaled) before saving — a real
-    test against actual 1440p/4K source clips hit "write operation timed
-    out" uploading un-resized native-resolution frames; multiple multi-MB
-    JPEGs add up fast on ordinary home upload bandwidth. Downscaling first
-    fixes that at the source instead of just raising timeouts."""
+    Frames are downscaled to `max_width` (falls back to
+    config.FIREWORKS_FRAME_MAX_WIDTH, aspect-preserved, never upscaled)
+    before saving — a real test against actual 1440p/4K source clips hit
+    "write operation timed out" uploading un-resized native-resolution
+    frames; multiple multi-MB JPEGs add up fast on ordinary home upload
+    bandwidth. Downscaling first fixes that at the source instead of just
+    raising timeouts."""
     duration = _probe_duration_seconds(video_path)
     if max_frames <= 1:
         timestamps = [duration / 2.0]
@@ -99,7 +101,7 @@ def _extract_frames(video_path: str, max_frames: int, workdir: str):
         step = (span_end - span_start) / (max_frames - 1) if max_frames > 1 else 0
         timestamps = [span_start + step * i for i in range(max_frames)]
 
-    max_w = config.FIREWORKS_FRAME_MAX_WIDTH
+    max_w = max_width or config.FIREWORKS_FRAME_MAX_WIDTH
     # scale filter: shrink to max_w wide if the source is wider, otherwise
     # leave as-is (never upscale a smaller source); height auto (-2 keeps it
     # divisible by 2, which some encoders require).
@@ -126,6 +128,16 @@ def _extract_frames(video_path: str, max_frames: int, workdir: str):
     if not frames:
         raise RuntimeError("ffmpeg failed to extract any frames from this clip")
     return frames
+
+
+def extract_frames_b64(video_path: str, n_frames: int, max_width: int) -> List[str]:
+    """Exactly `n_frames` uniform frames as base64 JPEG strings, in
+    chronological order. Shared by the qwen_direct engine and
+    scripts/local_eval.py so the local judge sees the same geometry the
+    writer sees."""
+    with tempfile.TemporaryDirectory() as workdir:
+        frames = _extract_frames(video_path, n_frames, workdir, max_width=max_width)
+    return [base64.b64encode(jpeg_bytes).decode("ascii") for _, jpeg_bytes in frames]
 
 
 def _extract_json(text: str) -> dict:
@@ -164,14 +176,17 @@ class FireworksCaptioner:
                  vision_model: Optional[str] = None, text_model: Optional[str] = None):
         self.api_key = api_key or config.FIREWORKS_API_KEY
         if not self.api_key:
-            raise ValueError("Missing FIREWORKS_API_KEY (required for CAPTION_PROVIDER=fireworks_vision)")
+            raise ValueError("Missing FIREWORKS_API_KEY (required for the Fireworks captioner)")
         self.base_url = base_url or config.FIREWORKS_BASE_URL
         self.vision_model = vision_model or config.FIREWORKS_VISION_MODEL
         self.text_model = text_model or config.FIREWORKS_TEXT_MODEL
 
     def _chat_with_retry(self, messages: List[Dict[str, Any]], model: str, max_tokens: int = 1500,
                           response_format: Optional[Dict[str, Any]] = None, timeout_seconds: Optional[float] = None,
-                          temperature: float = 0.5):
+                          temperature: float = 0.5, attempts: Optional[int] = None):
+        """`attempts` caps the TOTAL number of tries (1 = no retries at all);
+        defaults to MAX_API_RETRIES + 1."""
+        total_attempts = attempts if attempts is not None else MAX_API_RETRIES + 1
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload: Dict[str, Any] = {
             "model": model,
@@ -188,7 +203,7 @@ class FireworksCaptioner:
         timeout = timeout_seconds if timeout_seconds is not None else config.PER_REQUEST_TIMEOUT_SECONDS
 
         last_exc: Optional[Exception] = None
-        for attempt in range(MAX_API_RETRIES + 1):
+        for attempt in range(total_attempts):
             try:
                 resp = requests.post(
                     f"{self.base_url}/chat/completions",
@@ -199,9 +214,9 @@ class FireworksCaptioner:
                 return resp.json()["choices"][0]["message"]["content"].strip()
             except Exception as e:
                 last_exc = e
-                if attempt < MAX_API_RETRIES and _is_retryable(e):
-                    delay = RETRY_BACKOFF_SECONDS[attempt]
-                    print(f"[retry] transient Fireworks vision error (attempt {attempt + 1}/{MAX_API_RETRIES + 1}, "
+                if attempt < total_attempts - 1 and _is_retryable(e):
+                    delay = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+                    print(f"[retry] transient Fireworks vision error (attempt {attempt + 1}/{total_attempts}, "
                           f"waiting {delay}s): {e}")
                     time.sleep(delay)
                     continue
@@ -246,39 +261,91 @@ class FireworksCaptioner:
         print(f"[fireworks] Sending NATIVE VIDEO Scene Analysis for {filename} "
               f"to {config.FIREWORKS_NATIVE_VIDEO_MODEL}...")
         t0 = time.monotonic()
+        # attempts=2 (not the default 3): the worst case for a 90s-timeout
+        # call is pathological, and the saved headroom funds the verification
+        # pass; the frame degrade chain still backstops a double failure.
+        # temperature 0.15: run-to-run report variance directly costs
+        # accuracy — the judge re-watches the clip, and a low-temp report
+        # stays closer to the modal viewing every other watcher gets.
         scene_report = self._chat_with_retry(
             messages=[{"role": "user", "content": content}],
             model=config.FIREWORKS_NATIVE_VIDEO_MODEL,
-            max_tokens=1600,
+            max_tokens=2200,
             timeout_seconds=config.FIREWORKS_NATIVE_VIDEO_TIMEOUT_SECONDS,
-            temperature=0.3,
+            temperature=0.15,
+            attempts=2,
         )
         print(f"[fireworks] Native video Scene Analysis completed in {time.monotonic() - t0:.2f}s")
         if scene_report.upper().startswith("ANALYSIS FAILED"):
             raise SceneAnalysisFailed(scene_report)
         return scene_report
 
+    def _verify_scene_report_native(self, video_url: str, report: str, filename: str) -> str:
+        """Stage 1.5 (PADAYON-style self-verification): re-watch the clip with
+        the draft report attached and delete/soften/fix unconfirmable claims.
+        Single attempt, no retries — on any failure, or a rewrite that no
+        longer looks like the same report, the original is kept unchanged, so
+        this pass can remove hallucinations but never lose the clip."""
+        content: List[Dict[str, Any]] = [
+            {"type": "text", "text": build_report_verification_prompt(report)},
+            {"type": "video_url", "video_url": {"url": video_url}},
+        ]
+        print(f"[fireworks] Verifying scene report for {filename} against the video...")
+        t0 = time.monotonic()
+        try:
+            verified = self._chat_with_retry(
+                messages=[{"role": "user", "content": content}],
+                model=config.FIREWORKS_NATIVE_VIDEO_MODEL,
+                max_tokens=2400,
+                timeout_seconds=config.FIREWORKS_VERIFY_TIMEOUT_SECONDS,
+                temperature=0.2,
+                attempts=1,
+            )
+        except Exception as e:
+            print(f"[fireworks] report verification failed ({e}) — keeping unverified report")
+            return report
+        # Sanity gates: the rewrite must still be the same 10-section report,
+        # not a summary, an apology, or a fragment.
+        markers = ("SCENE REPORT", "SUBJECT", "RISKS")
+        if all(m in verified for m in markers) and len(verified) >= 0.6 * len(report):
+            print(f"[fireworks] report verification OK in {time.monotonic() - t0:.2f}s "
+                  f"({len(report)} -> {len(verified)} chars)")
+            return verified
+        print("[fireworks] verification output failed sanity gates — keeping unverified report")
+        return report
+
     def _generate_candidates(self, scene_report: str, styles: list, filename: str, n: int,
                              variety_index: int = 0) -> list:
         """Stage 2 Best-of-N: n candidate caption sets in parallel at
         different temperatures. Returns every set that parsed successfully
-        (at least one, else raises the last error). `variety_index` picks
-        this clip's assigned humorous_non_tech opening — see prompts.py."""
+        (at least one, else raises the last error). `variety_index` is kept
+        for interface compatibility only — see prompts.py."""
         prompt2 = build_caption_generation_prompt(scene_report, styles, variety_index)
         temperatures = [0.55, 0.7, 0.85, 1.0, 1.15][:max(1, n)] or [0.7]
 
         def one(temp: float):
+            # max_tokens 1200: four fact-dense captions (formal up to 50
+            # words) plus JSON overhead no longer fit in the old 600 — a
+            # truncated response fails json parsing and silently costs a
+            # whole candidate set.
             raw = self._chat_with_retry(
                 messages=[{"role": "user", "content": prompt2}],
                 model=self.text_model,
-                max_tokens=600,
+                max_tokens=1200,
                 response_format={"type": "json_object"},
                 temperature=temp,
             )
             captions = _extract_json(raw)
+            # Key normalization (UniKL trick): models occasionally emit
+            # "Humorous-Tech" or "humorous tech" — without this, that style
+            # silently comes back empty for the whole candidate set.
+            normalized = {
+                str(k).strip().lower().replace("-", "_").replace(" ", "_"): v
+                for k, v in captions.items()
+            }
             # sanitize_caption also scrubs any prompt-instruction text the model
             # echoed into the caption (see prompts.sanitize_caption).
-            return {s: sanitize_caption(str(captions.get(s, ""))) for s in styles}
+            return {s: sanitize_caption(str(normalized.get(s, ""))) for s in styles}
 
         print(f"[fireworks] Generating {len(temperatures)} caption candidate set(s) for {filename} via {self.text_model}...")
         t0 = time.monotonic()
@@ -300,7 +367,8 @@ class FireworksCaptioner:
         return candidates
 
     def caption_clip(self, video_source: Union[str, Callable[[], str]], styles: list,
-                     video_url: Optional[str] = None, variety_index: int = 0):
+                     video_url: Optional[str] = None, variety_index: int = 0,
+                     time_remaining: Optional[Callable[[], float]] = None):
         """Returns (candidates: list[dict], scene_report: str). Candidates
         is a non-empty list of {style: caption} dicts — the caller picks the
         best one per style (or just uses candidates[0]).
@@ -308,8 +376,9 @@ class FireworksCaptioner:
         `video_source` is a local file path OR a zero-arg callable returning
         one. The callable is invoked only if the frame fallback is actually
         needed, so the native-video path never waits on (or pays for) a
-        local download at all. `variety_index` is the clip's position in the
-        task list, used to assign its humorous_non_tech opening (prompts.py).
+        local download at all. `time_remaining` (optional) reports seconds
+        left on the caller's global clock; when given, the verification pass
+        is skipped once the clock runs low.
 
         Stage 1 degrade chain so a flaky model/call never costs the clip:
         whole clip via video_url on the native-video model -> full frames on
@@ -324,6 +393,13 @@ class FireworksCaptioner:
         if config.ENABLE_NATIVE_VIDEO and video_url:
             try:
                 scene_report = self._scene_report_native(video_url, filename)
+                # Stage 1.5: the model re-watches the clip and strips claims
+                # it can't confirm. Only on the native path, only with clock
+                # to spare — an unverified report still beats no captions.
+                if (config.ENABLE_REPORT_VERIFICATION
+                        and (time_remaining is None
+                             or time_remaining() > config.VERIFY_MIN_TIME_REMAINING_SECONDS)):
+                    scene_report = self._verify_scene_report_native(video_url, scene_report, filename)
             except Exception as e:
                 print(f"[fireworks] Native video Scene Analysis failed ({e}) — degrading to frame analysis")
 

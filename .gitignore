@@ -7,3 +7,4 @@ scratch_videos/
 __pycache__/
 *.pyc
 output/*.json
+eval/
